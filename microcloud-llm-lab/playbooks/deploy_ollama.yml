@@ -1,0 +1,7 @@
+---
+- name: Deploy Ollama LLM service
+  hosts: lxd_controller
+  gather_facts: false
+
+  roles:
+    - ollama

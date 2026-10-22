@@ -1,0 +1,71 @@
+---
+- name: Remove the MicroCloud LLM lab containers
+  hosts: lxd_controller
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+
+  vars:
+    lab_containers:
+      - log-api
+      - log-db
+      - ollama
+
+  tasks:
+    - name: List existing instances
+      ansible.builtin.command:
+        argv:
+          - lxc
+          - list
+          - --format
+          - csv
+          - -c
+          - n
+      register: existing_instances
+      changed_when: false
+      check_mode: false
+      run_once: true
+
+    - name: Show containers selected for deletion
+      ansible.builtin.debug:
+        msg: "{{ item }} will be permanently deleted with its data."
+      loop: "{{ lab_containers }}"
+      when: item in existing_instances.stdout_lines
+      run_once: true
+
+    - name: Delete lab containers
+      ansible.builtin.command:
+        argv:
+          - lxc
+          - delete
+          - "{{ item }}"
+          - --force
+      loop: "{{ lab_containers }}"
+      when:
+        - item in existing_instances.stdout_lines
+        - not ansible_check_mode
+      changed_when: true
+      run_once: true
+
+    - name: List remaining instances
+      ansible.builtin.command:
+        argv:
+          - lxc
+          - list
+          - --format
+          - csv
+          - -c
+          - n
+      register: remaining_instances
+      changed_when: false
+      when: not ansible_check_mode
+      run_once: true
+
+    - name: Verify lab containers are gone
+      ansible.builtin.assert:
+        that:
+          - item not in remaining_instances.stdout_lines
+        fail_msg: "Container {{ item }} still exists."
+      loop: "{{ lab_containers }}"
+      when: not ansible_check_mode
+      run_once: true

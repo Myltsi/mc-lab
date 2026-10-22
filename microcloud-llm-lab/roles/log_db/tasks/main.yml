@@ -1,0 +1,141 @@
+---
+- name: Update apt cache inside log-db container
+  ansible.builtin.command: lxc exec log-db -- apt-get update
+  changed_when: false
+
+- name: Install Python and Flask inside log-db container
+  ansible.builtin.command: >
+    lxc exec log-db -- apt-get install -y
+    python3 python3-flask curl
+  changed_when: true
+
+- name: Create application directory in log-db
+  ansible.builtin.command: lxc exec log-db -- mkdir -p /opt/log-db
+  changed_when: true
+
+- name: Write log-db Flask application
+  ansible.builtin.shell: |
+    lxc exec log-db -- bash -lc 'cat > /opt/log-db/app.py <<'"'"'PYEOF'"'"'
+    from flask import Flask, request, jsonify
+    import sqlite3
+    import time
+    import os
+
+    DB_PATH = os.environ.get("LOG_DB_PATH", "/opt/log-db/logs.db")
+
+    app = Flask(__name__)
+
+    def init_db():
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                source TEXT,
+                log_line TEXT NOT NULL,
+                analysis TEXT NOT NULL,
+                severity TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return jsonify({"status": "ok", "service": "log-db"})
+
+    @app.route("/records", methods=["POST"])
+    def create_record():
+        data = request.get_json(force=True)
+        source = data.get("source", "unknown")
+        log_line = data.get("log_line", "")
+        analysis = data.get("analysis", "")
+        severity = data.get("severity", "unknown")
+
+        if not log_line or not analysis:
+            return jsonify({"error": "log_line and analysis are required"}), 400
+
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO analyses (created_at, source, log_line, analysis, severity) VALUES (?, ?, ?, ?, ?)",
+            (int(time.time()), source, log_line, analysis, severity),
+        )
+        conn.commit()
+        record_id = cur.lastrowid
+        conn.close()
+
+        return jsonify({"id": record_id, "status": "stored"})
+
+    @app.route("/records", methods=["GET"])
+    def list_records():
+        limit = int(request.args.get("limit", 20))
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, created_at, source, log_line, analysis, severity FROM analyses ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        return jsonify([
+            {
+                "id": row[0],
+                "created_at": row[1],
+                "source": row[2],
+                "log_line": row[3],
+                "analysis": row[4],
+                "severity": row[5],
+            }
+            for row in rows
+        ])
+
+    if __name__ == "__main__":
+        init_db()
+        app.run(host="0.0.0.0", port=5000)
+    PYEOF'
+  args:
+    executable: /bin/bash
+
+- name: Write log-db systemd service
+  ansible.builtin.shell: |
+    lxc exec log-db -- bash -lc 'cat > /etc/systemd/system/log-db.service <<'"'"'EOF'"'"'
+    [Unit]
+    Description=Lightweight Log DB API
+    After=network-online.target
+
+    [Service]
+    Type=simple
+    WorkingDirectory=/opt/log-db
+    Environment=LOG_DB_PATH=/opt/log-db/logs.db
+    ExecStart=/usr/bin/python3 /opt/log-db/app.py
+    Restart=always
+    RestartSec=3
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF'
+  args:
+    executable: /bin/bash
+
+- name: Initialize SQLite database
+  ansible.builtin.command: lxc exec log-db -- python3 -c "import sys; sys.path.insert(0, '/opt/log-db'); import app; app.init_db()"
+  changed_when: true
+
+- name: Enable and start log-db service
+  ansible.builtin.command: lxc exec log-db -- systemctl enable --now log-db
+  changed_when: true
+
+- name: Wait for log-db API
+  ansible.builtin.command: lxc exec log-db -- curl -sf http://127.0.0.1:5000/health
+  register: log_db_health
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: log_db_health.rc == 0
+
+- name: Show log-db health
+  ansible.builtin.debug:
+    var: log_db_health.stdout

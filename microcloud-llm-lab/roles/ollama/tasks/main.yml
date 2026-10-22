@@ -1,0 +1,52 @@
+---
+- name: Update apt cache inside ollama container
+  ansible.builtin.command: lxc exec ollama -- apt-get update
+  changed_when: false
+
+- name: Install dependencies inside ollama container
+  ansible.builtin.command: >
+    lxc exec ollama -- apt-get install -y
+    curl ca-certificates gnupg
+  changed_when: true
+
+- name: Install Ollama inside container
+  ansible.builtin.shell: |
+    lxc exec ollama -- bash -lc "curl -fsSL https://ollama.com/install.sh | sh"
+  args:
+    executable: /bin/bash
+
+- name: Ensure Ollama listens on all container interfaces
+  ansible.builtin.shell: |
+    lxc exec ollama -- bash -lc 'mkdir -p /etc/systemd/system/ollama.service.d'
+    lxc exec ollama -- bash -lc 'cat > /etc/systemd/system/ollama.service.d/override.conf <<EOF
+    [Service]
+    Environment="OLLAMA_HOST=0.0.0.0:11434"
+    EOF'
+    lxc exec ollama -- systemctl daemon-reload
+    lxc exec ollama -- systemctl restart ollama
+  args:
+    executable: /bin/bash
+
+- name: Wait for Ollama API to respond
+  ansible.builtin.command: >
+    lxc exec ollama -- curl -sf http://127.0.0.1:11434/api/tags
+  register: ollama_api_check
+  changed_when: false
+  retries: 20
+  delay: 3
+  until: ollama_api_check.rc == 0
+
+- name: Pull lightweight log-analysis model
+  ansible.builtin.command: >
+    lxc exec ollama -- ollama pull {{ ollama_model }}
+  register: ollama_pull
+  changed_when: "'success' in ollama_pull.stdout or 'pulling' in ollama_pull.stdout"
+
+- name: Show installed Ollama models
+  ansible.builtin.command: lxc exec ollama -- ollama list
+  register: ollama_models
+  changed_when: false
+
+- name: Print Ollama models
+  ansible.builtin.debug:
+    var: ollama_models.stdout_lines

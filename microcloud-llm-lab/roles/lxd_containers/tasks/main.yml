@@ -1,0 +1,42 @@
+---
+- name: Check existing containers
+  ansible.builtin.command: lxc list --format csv -c n
+  register: existing_containers
+  changed_when: false
+
+- name: Launch required LXD containers
+  ansible.builtin.command: >
+    lxc launch {{ item.image }} {{ item.name }}
+    --target {{ item.target }}
+  loop: "{{ containers }}"
+  when: item.name not in existing_containers.stdout_lines
+
+- name: Wait for containers to get IPv4 addresses
+  ansible.builtin.command: >
+    lxc list {{ item.name }} --format json
+  loop: "{{ containers }}"
+  register: container_status
+  changed_when: false
+  retries: 20
+  delay: 6
+  until: >
+    (
+      container_status.stdout | from_json
+    )[0].state.status == "Running" and
+    (
+      (
+        container_status.stdout | from_json
+      )[0].state.network.eth0.addresses
+      | selectattr('family', 'equalto', 'inet')
+      | list
+      | length
+    ) > 0
+
+- name: Show created containers
+  ansible.builtin.command: lxc list
+  register: lxc_list
+  changed_when: false
+
+- name: Print containers
+  ansible.builtin.debug:
+    var: lxc_list.stdout_lines

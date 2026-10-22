@@ -1,0 +1,32 @@
+---
+- name: Check MicroCloud/LXD cluster health
+  hosts: lxd_controller
+  gather_facts: false
+
+  tasks:
+    - name: Show LXD cluster members
+      ansible.builtin.command: lxc cluster list
+      register: lxd_cluster
+      changed_when: false
+
+    - name: Print LXD cluster members
+      ansible.builtin.debug:
+        var: lxd_cluster.stdout_lines
+
+    - name: Show LXD storage pools
+      ansible.builtin.command: lxc storage list
+      register: lxd_storage
+      changed_when: false
+
+    - name: Print LXD storage pools
+      ansible.builtin.debug:
+        var: lxd_storage.stdout_lines
+
+    - name: Show LXD networks
+      ansible.builtin.command: lxc network list
+      register: lxd_networks
+      changed_when: false
+
+    - name: Print LXD networks
+      ansible.builtin.debug:
+        var: lxd_networks.stdout_lines

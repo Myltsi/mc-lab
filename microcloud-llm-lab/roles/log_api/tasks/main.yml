@@ -1,0 +1,201 @@
+---
+- name: Update apt cache inside log-api container
+  ansible.builtin.command: lxc exec log-api -- apt-get update
+  changed_when: false
+
+- name: Install Python dependencies inside log-api container
+  ansible.builtin.command: >
+    lxc exec log-api -- apt-get install -y
+    python3 python3-flask python3-requests curl
+  changed_when: true
+
+- name: Create application directory in log-api
+  ansible.builtin.command: lxc exec log-api -- mkdir -p /opt/log-api
+  changed_when: true
+
+- name: Write log-api Flask application
+  ansible.builtin.shell: |
+    lxc exec log-api -- bash -lc 'cat > /opt/log-api/app.py <<'"'"'PYEOF'"'"'
+    from flask import Flask, request, jsonify
+    import os
+    import re
+    import requests
+
+    app = Flask(__name__)
+
+    OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+    LOG_DB_URL = os.environ.get("LOG_DB_URL", "http://log-db:5000")
+    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
+
+    def classify_severity(log_line: str) -> str:
+        lowered = log_line.lower()
+        high_patterns = [
+            "root login",
+            "accepted password",
+            "sudo",
+            "segfault",
+            "kernel panic",
+            "privilege escalation",
+            "authentication failure",
+        ]
+        medium_patterns = [
+            "failed password",
+            "invalid user",
+            "error",
+            "denied",
+            "unauthorized",
+            "warning",
+        ]
+
+        if any(pattern in lowered for pattern in high_patterns):
+            return "high"
+        if any(pattern in lowered for pattern in medium_patterns):
+            return "medium"
+        return "low"
+
+    def analyze_with_ollama(log_line: str, source: str) -> str:
+        prompt = f"""
+        You are a defensive cybersecurity log analysis assistant.
+
+        Analyze the following log line for blue-team monitoring.
+
+        Rules:
+        - Do not suggest weakening authentication.
+        - Do not suggest renaming accounts as a fix.
+        - Do not provide offensive instructions.
+        - Keep the response concise.
+        - Prefer practical defensive actions such as blocking IPs, reviewing authentication logs, disabling unused accounts, enforcing MFA, rate limiting, and alerting.
+
+        Return exactly these fields:
+        event_type:
+        severity:
+        reason:
+        recommended_action:
+
+        Source: {source}
+        Log line: {log_line}
+        """
+
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        return response.json().get("response", "").strip()
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        return jsonify({
+            "status": "ok",
+            "service": "log-api",
+            "ollama_url": OLLAMA_URL,
+            "log_db_url": LOG_DB_URL,
+            "model": OLLAMA_MODEL,
+        })
+
+    @app.route("/analyze", methods=["POST"])
+    def analyze():
+        data = request.get_json(force=True)
+        log_line = data.get("log_line", "").strip()
+        source = data.get("source", "unknown").strip()
+
+        if not log_line:
+            return jsonify({"error": "log_line is required"}), 400
+
+        severity = classify_severity(log_line)
+
+        try:
+            analysis = analyze_with_ollama(log_line, source)
+        except Exception as exc:
+            return jsonify({
+                "error": "ollama_request_failed",
+                "details": str(exc),
+                "severity": severity,
+            }), 502
+
+        db_payload = {
+            "source": source,
+            "log_line": log_line,
+            "analysis": analysis,
+            "severity": severity,
+        }
+
+        stored = None
+        try:
+            db_response = requests.post(
+                f"{LOG_DB_URL}/records",
+                json=db_payload,
+                timeout=10,
+            )
+            db_response.raise_for_status()
+            stored = db_response.json()
+        except Exception as exc:
+            stored = {
+                "status": "not_stored",
+                "error": str(exc),
+            }
+
+        return jsonify({
+            "source": source,
+            "log_line": log_line,
+            "severity": severity,
+            "analysis": analysis,
+            "storage": stored,
+        })
+
+    @app.route("/records", methods=["GET"])
+    def records():
+        limit = request.args.get("limit", "20")
+        response = requests.get(f"{LOG_DB_URL}/records?limit={limit}", timeout=10)
+        response.raise_for_status()
+        return jsonify(response.json())
+
+    if __name__ == "__main__":
+        app.run(host="0.0.0.0", port=8080)
+    PYEOF'
+  args:
+    executable: /bin/bash
+
+- name: Write log-api systemd service
+  ansible.builtin.shell: |
+    lxc exec log-api -- bash -lc 'cat > /etc/systemd/system/log-api.service <<'"'"'EOF'"'"'
+    [Unit]
+    Description=Lightweight Log Analysis API
+    After=network-online.target
+
+    [Service]
+    Type=simple
+    WorkingDirectory=/opt/log-api
+    Environment=OLLAMA_URL=http://ollama:11434
+    Environment=LOG_DB_URL=http://log-db:5000
+    Environment=OLLAMA_MODEL=qwen2.5:0.5b
+    ExecStart=/usr/bin/python3 /opt/log-api/app.py
+    Restart=always
+    RestartSec=3
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF'
+  args:
+    executable: /bin/bash
+
+- name: Enable and start log-api service
+  ansible.builtin.command: lxc exec log-api -- systemctl enable --now log-api
+  changed_when: true
+
+- name: Wait for log-api API
+  ansible.builtin.command: lxc exec log-api -- curl -sf http://127.0.0.1:8080/health
+  register: log_api_health
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: log_api_health.rc == 0
+
+- name: Show log-api health
+  ansible.builtin.debug:
+    var: log_api_health.stdout

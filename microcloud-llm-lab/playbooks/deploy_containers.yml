@@ -1,0 +1,7 @@
+---
+- name: Deploy base LXD containers on MicroCloud
+  hosts: lxd_controller
+  gather_facts: false
+
+  roles:
+    - lxd_containers
