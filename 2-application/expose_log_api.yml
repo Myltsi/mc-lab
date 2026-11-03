@@ -1,0 +1,66 @@
+---
+- name: Publish log-api for the log forwarder
+  hosts: lxd_controller
+  gather_facts: false
+
+  vars:
+    forward_address: 192.168.1.130
+    forward_network: default
+    forward_port: 8080
+
+  tasks:
+    - name: Read log-api state
+      ansible.builtin.command: lxc list log-api --format json
+      register: log_api_state
+      changed_when: false
+
+    - name: Pick log-api's internal IPv4 address
+      ansible.builtin.set_fact:
+        log_api_ip: >-
+          {{ ((log_api_state.stdout | from_json)[0].state.network.eth0.addresses
+              | selectattr('family', 'equalto', 'inet') | first).address }}
+
+    - name: List network forwards
+      ansible.builtin.command: lxc network forward list {{ forward_network }} --format csv
+      register: network_forwards
+      changed_when: false
+
+    - name: Create the forward address
+      ansible.builtin.command: lxc network forward create {{ forward_network }} {{ forward_address }}
+      when: forward_address not in (network_forwards.stdout_lines | map('split', ',') | map('first') | list)
+      changed_when: true
+
+    - name: Read the forward
+      ansible.builtin.command: lxc network forward show {{ forward_network }} {{ forward_address }}
+      register: forward_config
+      changed_when: false
+
+    - name: Find the current target of the log-api port
+      ansible.builtin.set_fact:
+        current_target: >-
+          {{ (forward_config.stdout | from_yaml).ports | default([], true)
+             | selectattr('listen_port', 'equalto', forward_port | string)
+             | map(attribute='target_address') | first | default('') }}
+
+    - name: Remove a rule that points to an old log-api address
+      ansible.builtin.command: >
+        lxc network forward port remove {{ forward_network }} {{ forward_address }}
+        tcp {{ forward_port }}
+      when: current_target not in ['', log_api_ip]
+      changed_when: true
+
+    - name: Forward the log-api port to the container
+      ansible.builtin.command: >
+        lxc network forward port add {{ forward_network }} {{ forward_address }}
+        tcp {{ forward_port }} {{ log_api_ip }} {{ forward_port }}
+      when: current_target != log_api_ip
+      changed_when: true
+
+    - name: Show the forward
+      ansible.builtin.command: lxc network forward show {{ forward_network }} {{ forward_address }}
+      register: forward_result
+      changed_when: false
+
+    - name: Print the forward
+      ansible.builtin.debug:
+        var: forward_result.stdout_lines

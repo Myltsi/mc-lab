@@ -1,0 +1,40 @@
+---
+- name: Remove the log-api network forward
+  hosts: lxd_controller
+  gather_facts: false
+  become: true
+
+  vars:
+    forward_address: 192.168.1.130
+    forward_network: default
+
+  tasks:
+    - name: List network forwards
+      ansible.builtin.command:
+        argv:
+          - lxc
+          - network
+          - forward
+          - list
+          - "{{ forward_network }}"
+          - --format
+          - csv
+      register: network_forwards
+      changed_when: false
+      check_mode: false
+      run_once: true
+
+    - name: Remove the log-api forward added by expose_log_api.yml
+      ansible.builtin.command:
+        argv:
+          - lxc
+          - network
+          - forward
+          - delete
+          - "{{ forward_network }}"
+          - "{{ forward_address }}"
+      when:
+        - forward_address in (network_forwards.stdout_lines | map('split', ',') | map('first') | list)
+        - not ansible_check_mode
+      changed_when: true
+      run_once: true
