@@ -4,28 +4,26 @@ lxd_controller_host: mc1
 lxd_storage_pool: remote
 lxd_network: default
 
-# Container placement
 containers:
   - name: ollama
     target: mc1
     image: ubuntu:24.04
-    profiles:
-      - default
-
+    profiles: [default]
   - name: log-api
     target: mc2
     image: ubuntu:24.04
-    profiles:
-      - default
-
+    profiles: [default]
   - name: log-db
     target: mc3
     image: ubuntu:24.04
-    profiles:
-      - default
+    profiles: [default]
+  - name: log-ui
+    target: mc4
+    image: ubuntu:24.04
+    profiles: [default]
 
-# Application settings
 ollama_model: qwen2.5:0.5b
 ollama_port: 11434
 log_api_port: 8080
 log_db_port: 5432
+log_ui_port: 8081
