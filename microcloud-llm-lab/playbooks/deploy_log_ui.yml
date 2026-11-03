@@ -1,0 +1,6 @@
+---
+- name: Deploy log analysis web interface
+  hosts: lxd_controller
+  gather_facts: false
+  roles:
+    - log_ui

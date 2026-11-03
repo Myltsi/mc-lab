@@ -1,0 +1,51 @@
+---
+- name: Update apt cache inside log-ui container
+  ansible.builtin.command:
+    cmd: lxc exec log-ui -- apt-get update
+  changed_when: false
+
+- name: Install Python dependencies inside log-ui container
+  ansible.builtin.command:
+    cmd: >
+      lxc exec log-ui -- apt-get install -y
+      python3 python3-flask python3-requests curl
+  changed_when: true
+
+- name: Create application directory
+  ansible.builtin.command:
+    cmd: lxc exec log-ui -- mkdir -p /opt/log-ui
+
+- name: Copy Flask application to controller
+  ansible.builtin.copy:
+    src: app.py
+    dest: /tmp/log-ui-app.py
+
+- name: Push Flask application into container
+  ansible.builtin.command:
+    cmd: lxc file push /tmp/log-ui-app.py log-ui/opt/log-ui/app.py
+
+- name: Copy systemd unit to controller
+  ansible.builtin.copy:
+    src: log-ui.service
+    dest: /tmp/log-ui.service
+
+- name: Push systemd unit into container
+  ansible.builtin.command:
+    cmd: lxc file push /tmp/log-ui.service log-ui/etc/systemd/system/log-ui.service
+
+- name: Reload systemd
+  ansible.builtin.command:
+    cmd: lxc exec log-ui -- systemctl daemon-reload
+
+- name: Enable and start log-ui service
+  ansible.builtin.command:
+    cmd: lxc exec log-ui -- systemctl enable --now log-ui
+
+- name: Wait for log-ui API
+  ansible.builtin.command:
+    cmd: lxc exec log-ui -- curl -sf http://127.0.0.1:8081
+  register: log_ui_health
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: log_ui_health.rc == 0

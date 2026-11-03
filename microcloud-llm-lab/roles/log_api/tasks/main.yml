@@ -26,6 +26,7 @@
     OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     LOG_DB_URL = os.environ.get("LOG_DB_URL", "http://log-db:5000")
     OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:0.5b")
+    LOG_DB_TOKEN = os.environ.get("LOG_DB_TOKEN")
 
     def classify_severity(log_line: str) -> str:
         lowered = log_line.lower()
@@ -130,6 +131,8 @@
             db_response = requests.post(
                 f"{LOG_DB_URL}/records",
                 json=db_payload,
+                # The token is injected into the service by Ansible Vault.
+                headers={"X-Log-DB-Token": LOG_DB_TOKEN},
                 timeout=10,
             )
             db_response.raise_for_status()
@@ -151,7 +154,12 @@
     @app.route("/records", methods=["GET"])
     def records():
         limit = request.args.get("limit", "20")
-        response = requests.get(f"{LOG_DB_URL}/records?limit={limit}", timeout=10)
+        response = requests.get(
+            f"{LOG_DB_URL}/records?limit={limit}",
+            # The database requires the same credential for read access.
+            headers={"X-Log-DB-Token": LOG_DB_TOKEN},
+            timeout=10,
+        )
         response.raise_for_status()
         return jsonify(response.json())
 
@@ -174,6 +182,8 @@
     Environment=OLLAMA_URL=http://ollama:11434
     Environment=LOG_DB_URL=http://log-db:5000
     Environment=OLLAMA_MODEL=qwen2.5:0.5b
+    # vault_log_db_token must be defined in the encrypted Ansible Vault.
+    Environment=LOG_DB_TOKEN={{ vault_log_db_token }}
     ExecStart=/usr/bin/python3 /opt/log-api/app.py
     Restart=always
     RestartSec=3

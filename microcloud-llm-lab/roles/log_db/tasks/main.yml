@@ -22,8 +22,15 @@
     import os
 
     DB_PATH = os.environ.get("LOG_DB_PATH", "/opt/log-db/logs.db")
+    LOG_DB_TOKEN = os.environ.get("LOG_DB_TOKEN")
 
     app = Flask(__name__)
+
+    def require_token():
+        # Keep health checks public, but protect all database records.
+        if not LOG_DB_TOKEN or request.headers.get("X-Log-DB-Token") != LOG_DB_TOKEN:
+            return jsonify({"error": "unauthorized"}), 401
+        return None
 
     def init_db():
         conn = sqlite3.connect(DB_PATH)
@@ -47,6 +54,10 @@
 
     @app.route("/records", methods=["POST"])
     def create_record():
+        auth_error = require_token()
+        if auth_error:
+            return auth_error
+
         data = request.get_json(force=True)
         source = data.get("source", "unknown")
         log_line = data.get("log_line", "")
@@ -70,6 +81,10 @@
 
     @app.route("/records", methods=["GET"])
     def list_records():
+        auth_error = require_token()
+        if auth_error:
+            return auth_error
+
         limit = int(request.args.get("limit", 20))
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -110,6 +125,8 @@
     Type=simple
     WorkingDirectory=/opt/log-db
     Environment=LOG_DB_PATH=/opt/log-db/logs.db
+    # vault_log_db_token must be defined in the encrypted Ansible Vault.
+    Environment=LOG_DB_TOKEN={{ vault_log_db_token }}
     ExecStart=/usr/bin/python3 /opt/log-db/app.py
     Restart=always
     RestartSec=3

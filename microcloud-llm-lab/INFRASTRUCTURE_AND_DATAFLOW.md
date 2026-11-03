@@ -1,8 +1,9 @@
 # MicroCloud LLM Lab Infrastructure and Dataflow
 
 This document describes the infrastructure and application dataflow implemented by
-the Ansible project in this directory. It documents the current setup only; it
-does not propose or apply configuration changes.
+the Ansible project in this directory. It documents the current setup, including
+the log API-to-database authorization flow and the Ansible Vault deployment
+requirements.
 
 ## 1. Scope and architecture
 
@@ -10,10 +11,11 @@ The lab consists of:
 
 - One Ansible control host, referred to as the controller.
 - Four Ubuntu servers forming the MicroCloud/LXD cluster.
-- Three LXD containers distributed across the cluster:
+- Four LXD containers distributed across the cluster:
   - `ollama`: local large-language-model service.
   - `log-api`: client-facing log-analysis API.
   - `log-db`: Flask API backed by SQLite.
+  - `log-ui`: Flask web interface for the log-analysis API.
 
 At the application level, the services are connected as follows:
 
@@ -29,6 +31,10 @@ log-api
   |
   | HTTP :11434
   +-----------------------> ollama
+
+log-ui
+  | HTTP :8081
+  +-----------------------> log-api
 ```
 
 The container-to-container name resolution and network reachability shown above
@@ -72,6 +78,7 @@ The intended container definitions are in
 | `ollama` | `mc1` | `ubuntu:24.04` | Ollama API on port `11434` |
 | `log-api` | `mc2` | `ubuntu:24.04` | Flask API on port `8080` |
 | `log-db` | `mc3` | `ubuntu:24.04` | Flask/SQLite API on port `5000` |
+| `log-ui` | `mc4` | `ubuntu:24.04` | Flask web interface on port `8081` |
 
 The container role is implemented in
 [roles/lxd_containers/tasks/main.yml](./roles/lxd_containers/tasks/main.yml).
@@ -83,9 +90,9 @@ It runs on the LXD controller and:
 4. Waits for each container to be running and to have an IPv4 address.
 5. Prints the resulting LXD instance list.
 
-The values `mc1`, `mc2`, and `mc3` are LXD target names configured by the
-project. They are separate from the Ansible inventory names `mc-node-1`,
-`mc-node-2`, and `mc-node-3`.
+The values `mc1`, `mc2`, `mc3`, and `mc4` are LXD target names configured by
+the project. They are separate from the Ansible inventory names `mc-node-1`,
+`mc-node-2`, `mc-node-3`, and `mc-node-4`.
 
 ## 4. Deployment and operational playbooks
 
@@ -105,7 +112,7 @@ This playbook reports the current state and does not modify the cluster.
 
 ### Deployment order
 
-The application deployment is split into four playbooks:
+The application deployment is split into five playbooks:
 
 ```text
 playbooks/deploy_containers.yml
@@ -115,6 +122,8 @@ playbooks/deploy_containers.yml
         +--> playbooks/deploy_log_db.yml
         |
         +--> playbooks/deploy_log_api.yml
+        |
+        +--> playbooks/deploy_log_ui.yml
 ```
 
 The practical order is:
@@ -123,8 +132,42 @@ The practical order is:
 2. `deploy_ollama.yml`
 3. `deploy_log_db.yml`
 4. `deploy_log_api.yml`
+5. `deploy_log_ui.yml`
 
 The application playbooks assume that the required containers already exist.
+`deploy_log_ui.yml` can be omitted when only the backend services are needed.
+
+### Ansible Vault and deployment credentials
+
+The log API and log database share a secret named `vault_log_db_token`. Store it
+in an encrypted Vault variables file, such as `group_vars/vault.yml`:
+
+```yaml
+vault_log_db_token: "replace-with-a-random-token"
+```
+
+Create or encrypt the file with:
+
+```bash
+ansible-vault encrypt group_vars/vault.yml
+```
+
+Do not store the token in `group_vars/all.yml`, a playbook, or a committed
+deployment script. The encrypted file must be available on the Ansible control
+host before deploying either service.
+
+With the current repository configuration, provide the Vault password when
+running the playbooks:
+
+```bash
+ansible-playbook --ask-vault-pass playbooks/deploy_log_db.yml
+ansible-playbook --ask-vault-pass playbooks/deploy_log_api.yml
+```
+
+The database must be deployed before the API so both services are configured
+with the same token. If unattended deployment is needed, use an external
+password file outside Git with `--vault-password-file`; do not put the Vault
+password directly in a repository script.
 
 ### Teardown
 
@@ -186,7 +229,9 @@ These endpoints are internal to the MicroCloud. Clients should use the
 `log-api` address instead of connecting to `log-db` directly.
 
 Each stored record contains an ID, creation timestamp, source, original log
-line, generated analysis, and severity.
+line, generated analysis, and severity. The `/records` endpoints require the
+`X-Log-DB-Token` request header; `/health` remains public for deployment health
+checks.
 
 ### Log analysis API
 
@@ -222,6 +267,19 @@ client requests use the `log-api` address and port `8080`:
 The `ollama:11434` and `log-db:5000` addresses are internal service addresses
 used by `log-api`; they are not required by the client.
 
+`log-api` authenticates to `log-db` by sending:
+
+```http
+X-Log-DB-Token: <vault_log_db_token>
+```
+
+The header is sent for both the internal `POST /records` request made during
+analysis and the internal `GET /records` request. `log-db` compares the header
+with its `LOG_DB_TOKEN` environment variable and returns HTTP `401` when the
+header is missing or incorrect. This protects the internal API-to-database
+connection; the public `log-api` endpoints do not currently authenticate their
+clients.
+
 Before calling Ollama, the API performs a local severity classification:
 
 - `high`: matches patterns such as root login, sudo, segfault, kernel panic,
@@ -247,9 +305,11 @@ Before calling Ollama, the API performs a local severity classification:
    `ollama:11434/api/generate`.
 6. Ollama runs the configured model and returns generated text.
 7. `log-api` sends a `POST /records` request to `log-db:5000`.
-8. `log-db` inserts the source, log line, analysis, severity, and timestamp into
+8. `log-api` includes the `X-Log-DB-Token` header from its systemd environment.
+9. `log-db` validates the header and returns `401` if it is missing or incorrect.
+10. `log-db` inserts the source, log line, analysis, severity, and timestamp into
    SQLite.
-9. `log-api` returns the original input, local severity, generated analysis, and
+11. `log-api` returns the original input, local severity, generated analysis, and
    storage result to the client.
 
 ```text
@@ -270,6 +330,7 @@ ollama:11434
 log-api:8080
   |
   | POST /records
+  | X-Log-DB-Token
   v
 log-db:5000
   |
@@ -282,9 +343,12 @@ log-db:5000
 
 1. A client sends `GET /records` to
   `http://<log-api-address>:8080/records`.
-2. `log-api` forwards the request to `log-db:5000/records`.
-3. `log-db` queries SQLite, ordering records by newest ID first.
-4. The records are returned through `log-api` to the client.
+2. `log-api` forwards the request to `log-db:5000/records` with the
+   `X-Log-DB-Token` header.
+3. `log-db` validates the header and returns `401` if it is missing or
+   incorrect.
+4. `log-db` queries SQLite, ordering records by newest ID first.
+5. The records are returned through `log-api` to the client.
 
 ## 7. Persistence and lifecycle
 
@@ -298,7 +362,7 @@ The application files and systemd unit files are also stored inside their
 respective containers under `/opt` and `/etc/systemd/system`.
 
 Because the teardown playbook uses forced container deletion, the database and
-all other data inside the three lab containers are removed when teardown is
+all other data inside the four lab containers are removed when teardown is
 executed. The current setup does not define external storage or a backup
 workflow for the SQLite database.
 
@@ -313,11 +377,16 @@ lxd_network
 ollama_port
 log_api_port
 log_db_port
+log_ui_port
 ```
 
 The current roles use several fixed command arguments and URLs instead of
 reading all of these variables. In particular, the database implementation
 uses SQLite and port `5000`; the `log_db_port: 5432` value does not represent a
-running PostgreSQL service.
+running PostgreSQL service. Likewise, the roles currently use the fixed service
+ports `11434`, `8080`, `5000`, and `8081` in their commands and systemd units.
 
-This document records that behavior as implemented and does not change it.
+The `log-ui` container is defined in `group_vars/all.yml` and deployed by
+`playbooks/deploy_log_ui.yml`. The current `playbooks/teardown.yml` removes
+`ollama`, `log-api`, and `log-db`, but does not remove `log-ui`; delete
+`log-ui` separately with LXC if a complete lab teardown is required.
