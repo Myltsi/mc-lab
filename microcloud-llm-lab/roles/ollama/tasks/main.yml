@@ -15,12 +15,12 @@
   args:
     executable: /bin/bash
 
-- name: Ensure Ollama listens on all container interfaces
+- name: Make Ollama listen only inside the container
   ansible.builtin.shell: |
     lxc exec ollama -- bash -lc 'mkdir -p /etc/systemd/system/ollama.service.d'
     lxc exec ollama -- bash -lc 'cat > /etc/systemd/system/ollama.service.d/override.conf <<EOF
     [Service]
-    Environment="OLLAMA_HOST=0.0.0.0:11434"
+    Environment="OLLAMA_HOST=127.0.0.1:11435"
     EOF'
     lxc exec ollama -- systemctl daemon-reload
     lxc exec ollama -- systemctl restart ollama
@@ -29,7 +29,7 @@
 
 - name: Wait for Ollama API to respond
   ansible.builtin.command: >
-    lxc exec ollama -- curl -sf http://127.0.0.1:11434/api/tags
+    lxc exec ollama -- curl -sf http://127.0.0.1:11435/api/tags
   register: ollama_api_check
   changed_when: false
   retries: 20
@@ -38,15 +38,104 @@
 
 - name: Pull lightweight log-analysis model
   ansible.builtin.command: >
-    lxc exec ollama -- ollama pull {{ ollama_model }}
+    lxc exec ollama --env OLLAMA_HOST=127.0.0.1:11435 -- ollama pull {{ ollama_model }}
   register: ollama_pull
   changed_when: "'success' in ollama_pull.stdout or 'pulling' in ollama_pull.stdout"
 
 - name: Show installed Ollama models
-  ansible.builtin.command: lxc exec ollama -- ollama list
+  ansible.builtin.command: lxc exec ollama --env OLLAMA_HOST=127.0.0.1:11435 -- ollama list
   register: ollama_models
   changed_when: false
 
 - name: Print Ollama models
   ansible.builtin.debug:
     var: ollama_models.stdout_lines
+
+- name: Create proxy directory
+  ansible.builtin.command: lxc exec ollama -- mkdir -p /opt/ollama-proxy
+  changed_when: true
+
+- name: Write token-checking proxy
+  ansible.builtin.shell: |
+    lxc exec ollama -- bash -lc 'cat > /opt/ollama-proxy/proxy.py <<'"'"'PYEOF'"'"'
+    import hmac
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    TOKEN = os.environ.get("OLLAMA_TOKEN", "")
+    UPSTREAM = "http://127.0.0.1:11435"
+
+    class Proxy(BaseHTTPRequestHandler):
+        def reply(self, status, data):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def forward(self):
+            if not TOKEN or not hmac.compare_digest(self.headers.get("X-Ollama-Token", ""), TOKEN):
+                self.reply(401, json.dumps({"error": "unauthorized"}).encode())
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else None
+            request = urllib.request.Request(
+                UPSTREAM + self.path,
+                data=body,
+                method=self.command,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=300) as response:
+                    self.reply(response.status, response.read())
+            except urllib.error.HTTPError as exc:
+                self.reply(exc.code, exc.read())
+            except Exception as exc:
+                self.reply(502, json.dumps({"error": str(exc)}).encode())
+
+        do_GET = forward
+        do_POST = forward
+
+    ThreadingHTTPServer(("0.0.0.0", 11434), Proxy).serve_forever()
+    PYEOF'
+  args:
+    executable: /bin/bash
+
+- name: Write proxy systemd service
+  ansible.builtin.shell: |
+    lxc exec ollama -- bash -lc 'cat > /etc/systemd/system/ollama-proxy.service <<'"'"'EOF'"'"'
+    [Unit]
+    Description=Token-checking proxy for Ollama
+    After=network-online.target ollama.service
+
+    [Service]
+    Type=simple
+    Environment=OLLAMA_TOKEN={{ vault_ollama_token }}
+    ExecStart=/usr/bin/python3 /opt/ollama-proxy/proxy.py
+    Restart=always
+    RestartSec=3
+
+    [Install]
+    WantedBy=multi-user.target
+    EOF'
+  args:
+    executable: /bin/bash
+  no_log: true
+
+- name: Enable and start the proxy
+  ansible.builtin.shell: |
+    lxc exec ollama -- systemctl daemon-reload
+    lxc exec ollama -- systemctl enable --now ollama-proxy
+  changed_when: true
+
+- name: Check that Ollama requires a token
+  ansible.builtin.command: >
+    lxc exec ollama -- curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:11434/api/tags
+  register: ollama_auth_check
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: ollama_auth_check.stdout == "401"

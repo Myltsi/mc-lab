@@ -10,6 +10,7 @@
       - log-api
       - log-db
       - ollama
+      - log-ui
 
   tasks:
     - name: List existing instances

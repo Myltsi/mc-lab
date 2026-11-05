@@ -5,6 +5,7 @@ import os
 app = Flask(__name__)
 app.secret_key = "change_me"
 LOG_DB_URL = os.environ.get("LOG_DB_URL", "http://log-db:5000")
+LOG_DB_TOKEN = os.environ.get("LOG_DB_TOKEN", "")
 DEFAULT_USER = "analyst"
 DEFAULT_PASSWORD = "Password123!"
 
@@ -45,7 +46,7 @@ def dashboard():
     if 'user' not in session:
         return redirect('/')
     try:
-        r=requests.get(f"{LOG_DB_URL}/records?limit=100",timeout=10)
+        r=requests.get(f"{LOG_DB_URL}/records?limit=100",headers={"X-Log-DB-Token":LOG_DB_TOKEN},timeout=10)
         r.raise_for_status()
         records=r.json()
     except Exception as exc:
