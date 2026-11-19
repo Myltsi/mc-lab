@@ -1,0 +1,9 @@
+[Unit]
+Description=Webshop of Many Things
+After=network.target
+[Service]
+WorkingDirectory=/opt/webshop
+ExecStart=/opt/webshop/venv/bin/python /opt/webshop/app.py
+Restart=always
+[Install]
+WantedBy=multi-user.target

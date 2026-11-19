@@ -21,6 +21,11 @@ containers:
     target: mc4
     image: ubuntu:24.04
     profiles: [default]
+  - name: webshop
+    target: mc4
+    image: ubuntu:24.04
+    profiles: [default]
+
 
 ollama_model: qwen2.5:0.5b
 ollama_port: 11434
