@@ -1,0 +1,19 @@
+---
+- command: lxc info webshop
+  changed_when: false
+- command: lxc exec webshop -- bash -c "apt-get update && apt-get install -y python3 python3-pip python3-venv"
+- ansible.builtin.copy: 
+    src: files/webshop.tar
+    dest: /tmp/webshop.tar
+- command: lxc file push /tmp/webshop.tar webshop/opt/
+- command: lxc exec webshop -- bash -c "tar xvfC /opt/webshop.tar /opt/"
+- ansible.builtin.copy:
+    src: files/webshop.service
+    dest: /tmp/webshop.service
+- command: lxc file push /tmp/webshop.service webshop/etc/systemd/system/webshop.service
+- command: lxc exec webshop -- python3 -m venv /opt/webshop/venv
+  ignore_errors: true
+- command: lxc exec webshop -- /opt/webshop/venv/bin/pip install -r /opt/webshop/requirements.txt
+- command: lxc exec webshop -- systemctl daemon-reload
+- command: lxc exec webshop -- systemctl enable webshop
+- command: lxc exec webshop -- systemctl restart webshop

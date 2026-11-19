@@ -40,3 +40,13 @@
 - name: Print containers
   ansible.builtin.debug:
     var: lxc_list.stdout_lines
+
+### Use the Finnish mirror, archive.ubuntu.com is unreachable from the lab ###
+- name: Use the Finnish Ubuntu mirror inside containers
+  ansible.builtin.command: >
+    lxc exec {{ item.name }} -- sed -i
+    's#http://archive.ubuntu.com#http://fi.archive.ubuntu.com#g'
+    /etc/apt/sources.list.d/ubuntu.sources
+  loop: "{{ containers }}"
+  loop_control:
+    label: "{{ item.name }}"

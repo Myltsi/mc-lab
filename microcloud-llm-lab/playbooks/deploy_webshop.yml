@@ -1,0 +1,5 @@
+---
+- hosts: lxd_controller
+  become: true
+  roles:
+    - webshop

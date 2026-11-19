@@ -11,11 +11,12 @@ The lab consists of:
 
 - One Ansible control host, referred to as the controller.
 - Four Ubuntu servers forming the MicroCloud/LXD cluster.
-- Four LXD containers distributed across the cluster:
+- Five LXD containers distributed across the cluster:
   - `ollama`: local large-language-model service.
   - `log-api`: client-facing log-analysis API.
   - `log-db`: Flask API backed by SQLite.
   - `log-ui`: Flask web interface for the log-analysis API.
+  - `webshop`: standalone Flask webshop.
 
 At the application level, the services are connected as follows:
 
@@ -35,6 +36,12 @@ log-api
 log-ui
   | HTTP :8081
   +-----------------------> log-api
+
+Client
+  |
+  | HTTP :5000
+  v
+webshop
 ```
 
 The container-to-container name resolution and network reachability shown above
@@ -79,6 +86,7 @@ The intended container definitions are in
 | `log-api` | `mc2` | `ubuntu:24.04` | Flask API on port `8080` |
 | `log-db` | `mc3` | `ubuntu:24.04` | Flask/SQLite API on port `5000` |
 | `log-ui` | `mc4` | `ubuntu:24.04` | Flask web interface on port `8081` |
+| `webshop` | `mc4` | `ubuntu:24.04` | Flask webshop on port `5000` |
 
 The container role is implemented in
 [roles/lxd_containers/tasks/main.yml](./roles/lxd_containers/tasks/main.yml).
@@ -112,7 +120,7 @@ This playbook reports the current state and does not modify the cluster.
 
 ### Deployment order
 
-The application deployment is split into five playbooks:
+The application deployment is split into six playbooks:
 
 ```text
 playbooks/deploy_containers.yml
@@ -124,6 +132,8 @@ playbooks/deploy_containers.yml
         +--> playbooks/deploy_log_api.yml
         |
         +--> playbooks/deploy_log_ui.yml
+        |
+        +--> playbooks/deploy_webshop.yml
 ```
 
 The practical order is:
@@ -133,6 +143,7 @@ The practical order is:
 3. `deploy_log_db.yml`
 4. `deploy_log_api.yml`
 5. `deploy_log_ui.yml`
+6. `deploy_webshop.yml`
 
 The application playbooks assume that the required containers already exist.
 `deploy_log_ui.yml` can be omitted when only the backend services are needed.
@@ -171,12 +182,14 @@ password directly in a repository script.
 
 ### Teardown
 
-[playbooks/teardown.yml](./playbooks/teardown.yml) removes the lab containers:
+[playbooks/teardown.yml](./playbooks/teardown.yml) removes all lab containers:
 
 ```text
 log-api
 log-db
 ollama
+webshop
+log-ui
 ```
 
 It lists existing instances, deletes matching containers with `lxc delete
@@ -362,7 +375,7 @@ The application files and systemd unit files are also stored inside their
 respective containers under `/opt` and `/etc/systemd/system`.
 
 Because the teardown playbook uses forced container deletion, the database and
-all other data inside the four lab containers are removed when teardown is
+all other data inside the five lab containers are removed when teardown is
 executed. The current setup does not define external storage or a backup
 workflow for the SQLite database.
 
@@ -387,6 +400,7 @@ running PostgreSQL service. Likewise, the roles currently use the fixed service
 ports `11434`, `8080`, `5000`, and `8081` in their commands and systemd units.
 
 The `log-ui` container is defined in `group_vars/all.yml` and deployed by
-`playbooks/deploy_log_ui.yml`. The current `playbooks/teardown.yml` removes
-`ollama`, `log-api`, and `log-db`, but does not remove `log-ui`; delete
-`log-ui` separately with LXC if a complete lab teardown is required.
+`playbooks/deploy_log_ui.yml`. The `webshop` container is also defined in
+`group_vars/all.yml` and deployed by `playbooks/deploy_webshop.yml`. The
+teardown playbook removes both containers along with `ollama`, `log-api`, and
+`log-db`.
