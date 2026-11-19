@@ -6,6 +6,7 @@ After=network-online.target
 Type=simple
 WorkingDirectory=/opt/log-ui
 Environment=LOG_DB_URL=http://log-db:5000
+Environment=LOG_DB_TOKEN={{ vault_log_db_token }}
 ExecStart=/usr/bin/python3 /opt/log-ui/app.py
 Restart=always
 RestartSec=3

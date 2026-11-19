@@ -25,8 +25,8 @@
     cmd: lxc file push /tmp/log-ui-app.py log-ui/opt/log-ui/app.py
 
 - name: Copy systemd unit to controller
-  ansible.builtin.copy:
-    src: log-ui.service
+  ansible.builtin.template:
+    src: "{{ role_path }}/files/log-ui.service"
     dest: /tmp/log-ui.service
 
 - name: Push systemd unit into container
