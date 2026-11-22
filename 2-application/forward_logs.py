@@ -20,7 +20,7 @@ MARK = "LOG_PIPELINE=1"
 
 IMPORTANT = re.compile(
     r"failed password|invalid user|accepted password|authentication failure"
-    r"|command=|not in sudoers|failed login|admin login"
+    r"|command=|not in sudoers|failed login|admin login|user login|order created"
     r"|segfault|out of memory|oom-kill|apparmor=\"denied\"|i/o error"
     r"|\[(WRN|ERR)\]|\|(WARN|ERR|EMER)\||health_(warn|err)"
     r"|\b(error|failed|panic|fatal|timeout|refused|degraded|unreachable|traceback)\b",
@@ -134,7 +134,8 @@ def read_journal(node, prefix, origin, cursors):
         if entry.get("_SYSTEMD_UNIT") == "snap.lxd.daemon.service":
             continue
         if entry.get("PRIORITY") in ("0", "1", "2", "3") or IMPORTANT.search(message):
-            submit(f"{origin}/{ident}", f"{origin} {ident}: {message}")
+            when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(int(entry.get("__REALTIME_TIMESTAMP", 0)) / 1e6))
+            submit(f"{origin}/{ident}", f"{when} {origin} {ident}: {message}")
 
 
 def watch_node(node):
@@ -155,8 +156,7 @@ def watch_containers(controller):
         started = time.monotonic()
         names = ssh(controller, ["lxc", "list", "status=running", "--format", "csv", "-c", "n"]) or ""
         for name in names.split():
-            if name != "log-api":
-                read_journal(controller, ["lxc", "exec", name, "--", "env", MARK], name, cursors)
+            read_journal(controller, ["lxc", "exec", name, "--", "env", MARK], name, cursors)
         time.sleep(max(0, WINDOW - (time.monotonic() - started)))
 
 

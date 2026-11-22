@@ -73,8 +73,10 @@
             "INSERT INTO analyses (created_at, source, log_line, analysis, severity) VALUES (?, ?, ?, ?, ?)",
             (int(time.time()), source, log_line, analysis, severity),
         )
-        conn.commit()
         record_id = cur.lastrowid
+        # Retention: delete records older than 90 days.
+        cur.execute("DELETE FROM analyses WHERE created_at < ?", (int(time.time()) - 90 * 24 * 3600,))
+        conn.commit()
         conn.close()
 
         return jsonify({"id": record_id, "status": "stored"})

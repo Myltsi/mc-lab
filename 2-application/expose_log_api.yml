@@ -7,6 +7,8 @@
     forward_address: 192.168.1.130
     forward_network: default
     forward_port: 8080
+    webshop_listen_port: 80
+    webshop_port: 5000
 
   tasks:
     - name: Read log-api state
@@ -54,6 +56,38 @@
         lxc network forward port add {{ forward_network }} {{ forward_address }}
         tcp {{ forward_port }} {{ log_api_ip }} {{ forward_port }}
       when: current_target != log_api_ip
+      changed_when: true
+
+    - name: Read webshop state
+      ansible.builtin.command: lxc list webshop --format json
+      register: webshop_state
+      changed_when: false
+
+    - name: Pick webshop's internal IPv4 address
+      ansible.builtin.set_fact:
+        webshop_ip: >-
+          {{ ((webshop_state.stdout | from_json)[0].state.network.eth0.addresses
+              | selectattr('family', 'equalto', 'inet') | first).address }}
+
+    - name: Find the current target of the webshop port
+      ansible.builtin.set_fact:
+        webshop_target: >-
+          {{ (forward_config.stdout | from_yaml).ports | default([], true)
+             | selectattr('listen_port', 'equalto', webshop_listen_port | string)
+             | map(attribute='target_address') | first | default('') }}
+
+    - name: Remove a rule that points to an old webshop address
+      ansible.builtin.command: >
+        lxc network forward port remove {{ forward_network }} {{ forward_address }}
+        tcp {{ webshop_listen_port }}
+      when: webshop_target not in ['', webshop_ip]
+      changed_when: true
+
+    - name: Forward the webshop port to the container
+      ansible.builtin.command: >
+        lxc network forward port add {{ forward_network }} {{ forward_address }}
+        tcp {{ webshop_listen_port }} {{ webshop_ip }} {{ webshop_port }}
+      when: webshop_target != webshop_ip
       changed_when: true
 
     - name: Show the forward

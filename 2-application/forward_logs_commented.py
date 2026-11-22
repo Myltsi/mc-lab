@@ -43,6 +43,8 @@ IMPORTANT = re.compile(
     # kirjautumiset ja pääkäyttäjäoikeuksien käyttö (sshd, sudo, webshop)
     r"failed password|invalid user|accepted password|authentication failure"
     r"|command=|not in sudoers|failed login|admin login"
+    # webshopin onnistuneet kirjautumiset ja tilaukset
+    r"|user login|order created"
     # kernelin ongelmat
     r"|segfault|out of memory|oom-kill|apparmor=\"denied\"|i/o error"
     # Cephin ja OVN:n varoitukset ja virheet sekä yleiset virhesanat
@@ -200,7 +202,9 @@ def read_journal(node, prefix, origin, cursors):
         # Mukaan, jos prioriteetti on err tai vakavampi (0-3) tai rivi
         # sisältää jonkin tärkeän avainsanan.
         if entry.get("PRIORITY") in ("0", "1", "2", "3") or IMPORTANT.search(message):
-            submit(f"{origin}/{ident}", f"{origin} {ident}: {message}")
+            # Tapahtuman aika journalista, jotta jokaisessa rivissä on aika, lähde ja tapahtuma.
+            when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(int(entry.get("__REALTIME_TIMESTAMP", 0)) / 1e6))
+            submit(f"{origin}/{ident}", f"{when} {origin} {ident}: {message}")
 
 
 # --- Keräyssäikeet ---------------------------------------------------------
@@ -229,9 +233,10 @@ def watch_containers(controller):
         # Konttilista haetaan joka kierroksella, joten uudet kontit tulevat mukaan.
         names = ssh(controller, ["lxc", "list", "status=running", "--format", "csv", "-c", "n"]) or ""
         for name in names.split():
-            if name != "log-api":  # log-api:n omat lokit syöttäisivät itseään takaisin
-                # MARK myös kontin sisällä, jotta oma lxc exec tunnistetaan LXD-tapahtumista.
-                read_journal(controller, ["lxc", "exec", name, "--", "env", MARK], name, cursors)
+            # Myös log-api valvotaan. Sen tavalliset pyyntölokit eivät osu
+            # avainsanoihin, joten vain sen virheet lähetetään.
+            # MARK myös kontin sisällä, jotta oma lxc exec tunnistetaan LXD-tapahtumista.
+            read_journal(controller, ["lxc", "exec", name, "--", "env", MARK], name, cursors)
         time.sleep(max(0, WINDOW - (time.monotonic() - started)))
 
 
